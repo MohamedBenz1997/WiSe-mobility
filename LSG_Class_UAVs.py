@@ -18,8 +18,8 @@ class Large_Scale_Gain_drone(Config):
     def __init__(self):
         Config.__init__(self)
         self.exponent = 3.8
-        self.shadowing_sigma_LOS1 = 4.0
-        self.shadowing_sigma_NLOS = 6.0
+        self.shadowing_sigma_LOS1 = 0.0
+        self.shadowing_sigma_NLOS = 0.0
         self.hE = 1.0  # effective enviroment height taken as 1m. 3GPP document 38.901, p.29.
         self.SLA_cut = 30  # in dB
         self.Amax_cut = 30  # in dB
@@ -175,7 +175,7 @@ class Large_Scale_Gain_drone(Config):
         LOS = tf.cast(P_random < P_LOS, "float32")
         # if self.drone_calib:
         #     LOS = tf.ones(LOS.shape, 'float32')
-        # LOS = tf.ones(LOS.shape, 'float32')
+        LOS = tf.ones(LOS.shape, 'float32')
         return LOS
 
     # This function calculates the Path Loss based on 3GPP Document 38.901 Urban Macro scenaario is consedired (p.27), LOS condition. Pathloss [dB], fc is in GHz and d is in meters
