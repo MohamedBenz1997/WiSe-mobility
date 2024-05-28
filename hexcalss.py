@@ -281,9 +281,9 @@ class DeployHex(Config):
             corners = polygon_corners(self.layout, self.T0[i])
             x, y = get_corners(corners)
             ax.plot(x, y, 'black',  zorder=1)
-        for i in range(int(self.GUE_ratio * self.Nuser_drop), self.Nuser_drop):
+        # for i in range(int(self.GUE_ratio * self.Nuser_drop), self.Nuser_drop):
         # for i in range(0,int(self.GUE_ratio * self.Nuser_drop)):
-        # for i in range(self.Nuser_drop):
+        for i in range(self.Nuser_drop):
             if i == 0:
                 # ax.plot(Xap[0, i, 0], Xap[0, i, 1], 'x', color='brown', label="BS")
                 # ax.text(Xap[0, i, 0], Xap[0, i, 1], str(i), color='brown', label="BS")
@@ -348,7 +348,7 @@ class DeployHex(Config):
 #
 # #test the class
 # config = Config()
-# ----------- This is where you see the deployed users on the hex grid
+# # ----------- This is where you see the deployed users on the hex grid
 # deployment = DeployHex()
 # deployment.call()
 # deployment.plot_hex()

@@ -32,7 +32,7 @@ class Config():
 
         self.bandwidth = 1e7 #TN Bandwidth in Hz
         self.noise_figure_user= 9 #TN Noise Figure in dB
-        self.Dist2D_exclud =35.0
+        self.Dist2D_exclud =0.0 #In mobility I disabled this, work needs to be done if included
 
         self.sectoring_status = True        #To sectorize each physical BS position to 3 sectors, 120 degree
 

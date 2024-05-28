@@ -33,15 +33,16 @@ P_Tx_TN = tf.tile(Ptx_thresholds_vector, [2 * config.batch_num, 1, config.Nuser_
 
 # Specifying mobility parameters
 ##############################################################################
-T = 10 #Total number of time iterations
-UE_speed_base = tf.constant(300, shape=[2 * config.batch_num, config.Nuser_drop, 1], dtype=tf.float32)
-UE_speed_zeros = tf.zeros([2 * config.batch_num, config.Nuser_drop, 2], dtype=tf.float32)
-UE_speed = tf.concat([UE_speed_base, UE_speed_zeros], axis=2)
-# UE_speed = tf.concat([UE_speed_zeros, UE_speed_base, UE_speed_zeros], axis=2)
-CIO_t = -2.0
+T = 15 #Total number of time iterations
+UE_speed_base = tf.constant(-50, shape=[2 * config.batch_num, config.Nuser_drop, 1], dtype=tf.float32)
+UE_speed_zeros = tf.zeros([2 * config.batch_num, config.Nuser_drop, 1], dtype=tf.float32)
+# UE_speed = tf.concat([UE_speed_base, UE_speed_zeros], axis=2)
+UE_speed = tf.concat([UE_speed_zeros, UE_speed_base, UE_speed_zeros], axis=2)
+CIO_t = 0.0
 CIO_s = 0.0
 Hys = 0.0
-TTT = 2
+TTT = 5
+Q_out = -50.0
 cell_assoc = "A3"
 # Initialization for A3 logic and their place holders
 number_of_users = 853 #2 users are UAVs, if I do 100% GUEs simulator crashes
@@ -51,9 +52,8 @@ A3_event_history = tf.TensorArray(dtype=tf.int64, size=T)
 # Placeholder for serving BS history, initialized to zeros with a shape determined by T and UEs
 best_base_station_indices = tf.zeros([number_of_users], dtype=tf.int64)
 serving_BS_history = tf.TensorArray(dtype=tf.int64, size=T)
-# Placeholder to track previous iteration's best base station indices
-# Initialize with invalid indices (-1) to indicate no base station associated at the start
-prev_best_base_station_indices = tf.fill([number_of_users], -1)
+# Placeholder for HO failures
+HO_failure_history = tf.TensorArray(dtype=tf.int64, size=T)
 
 # Run simulator based on specified parameters
 ##############################################################################
@@ -114,7 +114,7 @@ for t in range(T):
                 return candidate_rsrp, candidate_index, updated_A3_counter
 
             def maintain_values():
-                return RSRP_served[i], best_base_station_indices[i], updated_A3_counter
+                return RSRP[tf.cast(best_base_station_indices[i], tf.int32), i], best_base_station_indices[i], updated_A3_counter
 
             RSRP_served_i, best_base_station_indices_i, A3_counter_i = tf.cond(
                 condition & (A3_counter[i] >= TTT), update_values, maintain_values)
@@ -167,13 +167,50 @@ for t in range(T):
     # HO counter parameter update
     HO_history_tensor = tf.cast(TimeOfAssociation_history_tensor != 0, dtype=tf.int32)
 
+    # HO failure tracking
+    HO_failure = tf.less(RSRP_served, Q_out)  # Ensure HO_failure is a boolean tensor
+
+    # Reset A3 counter and re-associate if HO failure
+    def handle_ho_failure():
+        new_rsrp_served = tf.reduce_max(RSRP, axis=0)
+        new_best_base_station_indices = tf.argmax(RSRP, axis=0)
+        return new_rsrp_served, new_best_base_station_indices, tf.zeros_like(A3_counter)
+
+
+    def handle_no_ho_failure():
+        return RSRP_served, best_base_station_indices, A3_counter
+
+
+    RSRP_served, best_base_station_indices, A3_counter = tf.cond(
+        tf.reduce_any(HO_failure), handle_ho_failure, handle_no_ho_failure
+    )
+
+    # Compare new best_base_station_indices with the previous iteration's base station indices
+    previous_best_base_station_indices = serving_BS_history.read(t)
+
+    HO_failure_tensor = tf.cast(tf.not_equal(best_base_station_indices, previous_best_base_station_indices), dtype=tf.int64)
+
+    # Store HO failure history
+    HO_failure_history = HO_failure_history.write(t, HO_failure_tensor)
+    HO_failure_history_tensor = HO_failure_history.stack()
+    HO_failure_history_tensor = tf.cast(HO_failure_history_tensor, tf.float32)
+
+    # Associated BS parameter update
+    serving_BS_history = serving_BS_history.write(t, best_base_station_indices)
+    serving_BS_history_tensor = serving_BS_history.stack()
+    serving_BS_history_tensor = tf.cast(serving_BS_history_tensor, tf.float32)
+
+
+
+
 #Total number of performed HOs
-total_handovers = tf.reduce_sum(HO_history_tensor.value())
+total_HO = tf.reduce_sum(HO_history_tensor)
 
-
+# Total number of HO failures
+total_HO_failure = tf.reduce_sum(HO_failure_history_tensor)
 
 # # Plotting the UE
-# users_xyz = Xuser[0, :, :]
+users_xyz = Xuser[0, :, :]
 #
 # # Extract x and y coordinates
 # x_coordinates = users_xyz[:, 0]

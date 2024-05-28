@@ -26,7 +26,13 @@ class Deployment(Config):
 
         if T == 0:
             Xap_ref, Xuser_ref = self.Deploy.call()
-            Xuser_ref = Xuser_ref
+            # Xuser_ref = Xuser_ref
+            # For debug
+            Xuser_ref = Xuser_ref*0.0
+            Xuser_ref_x = Xuser_ref[:,:,0:1]
+            Xuser_ref_y = Xuser_ref[:, :, 1:2]+950.0
+            Xuser_ref_z = Xuser_ref[:, :, 2:]+1.5
+            Xuser_ref = tf.concat([Xuser_ref_x, Xuser_ref_y, Xuser_ref_z], axis=2)
             Xap = Xap_ref
             Xuser = Xuser_ref
         else:
