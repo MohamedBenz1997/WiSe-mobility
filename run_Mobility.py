@@ -41,8 +41,11 @@ UE_speed = tf.concat([UE_speed_zeros, UE_speed_base, UE_speed_zeros], axis=2)
 CIO_t = 0.0
 CIO_s = 0.0
 Hys = 0.0
-TTT = 5
-Q_out = -50.0
+TTT = 0
+T310 = 0
+Q_out = -34.0
+# Define the threshold Ts
+Ts = 4000
 cell_assoc = "A3"
 # Initialization for A3 logic and their place holders
 number_of_users = 853 #2 users are UAVs, if I do 100% GUEs simulator crashes
@@ -54,7 +57,12 @@ best_base_station_indices = tf.zeros([number_of_users], dtype=tf.int64)
 serving_BS_history = tf.TensorArray(dtype=tf.int64, size=T)
 # Placeholder for HO failures
 HO_failure_history = tf.TensorArray(dtype=tf.int64, size=T)
-
+# Initialize T310_event to keep track of when the condition is first triggered
+T310_event = tf.zeros([number_of_users], dtype=tf.int32)
+# Placeholder to store the time each user spends at each base station for each time step
+TimeOfStay = tf.TensorArray(dtype=tf.int32, size=T)
+current_stay_time = tf.zeros([number_of_users], dtype=tf.int32)
+previous_best_base_station_indices = tf.zeros([number_of_users], dtype=tf.int64)
 # Run simulator based on specified parameters
 ##############################################################################
 data = Terrestrial()
@@ -109,9 +117,12 @@ for t in range(T):
             # Increment A3_counter if condition is satisfied
             updated_A3_counter = tf.where(condition, A3_counter[i] + 1, A3_counter[i])
 
+            # Store the index value of the base station that triggered the A3 event
+            A3_triggered_index = tf.where(condition, candidate_index, ue_best_base_station_indices)
+
             def update_values():
                 updated_A3_counter = tf.constant(0)  # Reset counter after association change
-                return candidate_rsrp, candidate_index, updated_A3_counter
+                return ue_rsrp[A3_triggered_index], A3_triggered_index, updated_A3_counter
 
             def maintain_values():
                 return RSRP[tf.cast(best_base_station_indices[i], tf.int32), i], best_base_station_indices[i], updated_A3_counter
@@ -124,6 +135,17 @@ for t in range(T):
                                                                     [best_base_station_indices_i])
             A3_counter = tf.tensor_scatter_nd_update(A3_counter, [[i]], [A3_counter_i])
 
+
+    # Track time spent at each base station
+    time_increment = tf.ones([number_of_users], dtype=tf.int32)
+    current_stay_time = tf.where(tf.equal(best_base_station_indices, previous_best_base_station_indices),
+                                 current_stay_time + time_increment, tf.zeros_like(current_stay_time))
+
+    # Store the time of stay for this iteration
+    TimeOfStay = TimeOfStay.write(t, current_stay_time)
+
+    # Update previous best base station indices
+    previous_best_base_station_indices = best_base_station_indices
 
     # A3 event parameter update
     A3_event = tf.cast(tf.not_equal(A3_counter, 0), tf.int64)
@@ -168,7 +190,16 @@ for t in range(T):
     HO_history_tensor = tf.cast(TimeOfAssociation_history_tensor != 0, dtype=tf.int32)
 
     # HO failure tracking
-    HO_failure = tf.less(RSRP_served, Q_out)  # Ensure HO_failure is a boolean tensor
+    condition_triggered = tf.less(RSRP_served, Q_out)
+
+    # Update T310_event if condition is triggered
+    T310_event = tf.where(condition_triggered, T310_event + 1, tf.zeros_like(T310_event))
+
+    # Determine HO_failure based on T310_event exceeding T310
+    HO_failure = tf.greater_equal(T310_event, T310)
+
+    # Reset T310_event for users where HO_failure is true
+    T310_event = tf.where(HO_failure, tf.zeros_like(T310_event), T310_event)
 
     # Reset A3 counter and re-associate if HO failure
     def handle_ho_failure():
@@ -195,13 +226,70 @@ for t in range(T):
     HO_failure_history_tensor = HO_failure_history.stack()
     HO_failure_history_tensor = tf.cast(HO_failure_history_tensor, tf.float32)
 
+    # After HO failure handling
+    if tf.reduce_any(HO_failure):
+        # Reset current_stay_time for users with HO failure
+        current_stay_time = tf.where(HO_failure, tf.zeros_like(current_stay_time), current_stay_time)
+
     # Associated BS parameter update
     serving_BS_history = serving_BS_history.write(t, best_base_station_indices)
     serving_BS_history_tensor = serving_BS_history.stack()
     serving_BS_history_tensor = tf.cast(serving_BS_history_tensor, tf.float32)
 
+    # Time of Stay
+    TimeOfStay_tensor_binary = TimeOfStay.stack()
+    TimeOfStay_tensor_binary = tf.cast(TimeOfStay_tensor_binary, tf.int32)
 
+    def modify_TimeOfStay_tensor(tensor):
+        # Transpose the tensor to iterate over columns
+        tensor_transposed = tf.transpose(tensor)
 
+        # Initialize the modified tensor with zeros
+        modified_tensor_transposed = tf.zeros_like(tensor_transposed, dtype=tf.int32)
+
+        for i in range(tensor_transposed.shape[0]):
+            current_row = tensor_transposed[i]
+            new_row = tf.zeros_like(current_row)
+
+            zero_indices = tf.where(tf.equal(current_row, 0))
+            zero_indices = tf.concat([zero_indices, tf.constant([[current_row.shape[0]]], dtype=tf.int64)], axis=0)
+
+            start = 0
+            for j in range(1, len(zero_indices)):
+                end = zero_indices[j][0]
+                sum_consecutive_ones = tf.reduce_sum(current_row[start:end])
+                if start > 0:
+                    new_row = tf.tensor_scatter_nd_update(new_row, [[start - 1]], [sum_consecutive_ones])
+                start = end + 1
+
+            modified_tensor_transposed = tf.tensor_scatter_nd_update(modified_tensor_transposed, [[i]], [new_row])
+
+        # Transpose back to the original shape
+        modified_tensor = tf.transpose(modified_tensor_transposed)
+
+        return modified_tensor*1000
+
+    TimeOfStay_tensor = modify_TimeOfStay_tensor(TimeOfStay_tensor_binary)
+
+    # Ping-pong calculations
+    # Create a tensor to track HO_ping_pong events
+    HO_ping_pong = tf.zeros_like(TimeOfStay_tensor, dtype=tf.int32)
+    # Iterate over each user
+    for user in range(serving_BS_history_tensor.shape[1]):
+        # Get the serving BS history and time of stay for the current user
+        user_serving_BS_history = serving_BS_history_tensor[:, user]
+        user_TimeOfStay = TimeOfStay_tensor[:, user]
+
+        # Iterate over each time step except the first and the last one
+        for t in range(1, serving_BS_history_tensor.shape[0] - 1):
+            # Check if the time of stay is less than the threshold and if the next serving BS index is the same as the previous one
+            if user_TimeOfStay[t] < Ts and user_serving_BS_history[t + 1] == user_serving_BS_history[t - 1]:
+                # Mark this event as HO_ping_pong
+                HO_ping_pong = tf.tensor_scatter_nd_update(HO_ping_pong, [[t, user]], [1])
+
+    # Convert the HO_ping_pong tensor to numpy for better visualization
+    HO_ping_pong_numpy = HO_ping_pong.numpy()
+    x=HO_ping_pong*HO_history_tensor
 
 #Total number of performed HOs
 total_HO = tf.reduce_sum(HO_history_tensor)
